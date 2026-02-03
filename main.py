@@ -749,8 +749,12 @@ async def pdf_by_name(interaction: discord.Interaction, name: str) -> None:
 )
 @app_commands.checks.has_permissions(manage_guild=True)
 async def pdf_reindex(interaction: discord.Interaction) -> None:
-    await interaction.response.send_message("I legally agree")
-
+    await interaction.response.defer(thinking=True, ephemeral=True)
+    try:
+        count = await interaction.client.pdf_index.rebuild()
+        await interaction.followup.send(f"Reindexed: {count} PDFs found.")
+    except Exception as e:
+        await interaction.followup.send(f"Reindex failed: {e}")
 
 @bot.tree.command(
     name="agree",
