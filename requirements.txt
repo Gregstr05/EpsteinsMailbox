@@ -1,0 +1,5 @@
+discord.py
+aiosqlite
+pymupdf
+pillow
+python-dotenv
