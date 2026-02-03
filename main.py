@@ -526,7 +526,7 @@ class PdfNewsBot(commands.Bot):
                         continue
                     result = shared_result
 
-                await channel.send(embed=result.embed, files=result.files)
+                await channel.send(f"You've got mail!", embed=result.embed, files=result.files)
                 await mark_sent_today(guild_id, today)
             except Exception as e:
                 print(f"Daily send failed to {guild_id}/{channel_id}: {e}")
