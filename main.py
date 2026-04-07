@@ -686,7 +686,7 @@ async def pdf_random(interaction: discord.Interaction) -> None:
         title_prefix=f"Random: {entry.rel.removesuffix('.pdf')}",
         semaphore=interaction.client.render_sem,
     )
-    await interaction.followup.send(embed=result.embed, files=result.files)
+    await interaction.followup.send(embed=result.embed, files=result.make_files())
 
 
 async def pdf_name_autocomplete(
@@ -719,7 +719,7 @@ async def pdf_by_name(interaction: discord.Interaction, name: str) -> None:
             title_prefix=f"PDF: {entry.rel}",
             semaphore=interaction.client.render_sem,
         )
-        await interaction.followup.send(embed=result.embed, files=result.files)
+        await interaction.followup.send(embed=result.embed, files=result.make_files())
         return
 
     # Ambiguous: show picker then render on selection.
@@ -733,7 +733,7 @@ async def pdf_by_name(interaction: discord.Interaction, name: str) -> None:
             title_prefix=f"PDF: {entry.rel}",
             semaphore=pick_interaction.client.render_sem,
         )
-        await pick_interaction.followup.send(embed=result.embed, files=result.files)
+        await pick_interaction.followup.send(embed=result.embed, files=result.make_files())
 
     view = PdfPickView(
         author_id=interaction.user.id,
