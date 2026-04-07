@@ -274,8 +274,14 @@ class PdfIndex:
 
 @dataclass
 class RenderResult:
-    embed: discord.Embed
-    files: list[discord.File]
+  embed: discord.Embed
+  _raw_images: list[tuple[bytes, str]]
+
+  def make_files(self) -> list[discord.File]:
+    return [
+      discord.File(fp=io.BytesIO(data), filename=fname)
+      for data, fname in self._raw_images
+    ]
 
 
 def _human_bytes(n: int) -> str:
@@ -395,13 +401,12 @@ async def render_entry(
         max_pages=MAX_PAGES,
     )
 
-    files: list[discord.File] = []
+    raw_images: list[tuple[bytes, str]] = []
     for idx, img_bytes in enumerate(images, start=1):
-        fp = io.BytesIO(img_bytes)
         filename = f"{Path(entry.rel).stem}_p{idx:02d}.jpg"
-        files.append(discord.File(fp=fp, filename=filename))
+        raw_images.append((img_bytes, filename))
 
-    return RenderResult(embed=embed, files=files)
+    return RenderResult(embed=embed, _raw_images=raw_images)
 
 
 # -----------------------------
@@ -526,7 +531,7 @@ class PdfNewsBot(commands.Bot):
                         continue
                     result = shared_result
 
-                await channel.send(f"You've got mail!", embed=result.embed, files=result.files)
+                await channel.send(f"You've got mail!", embed=result.embed, files=result.make_files())
                 await mark_sent_today(guild_id, today)
             except Exception as e:
                 print(f"Daily send failed to {guild_id}/{channel_id}: {e}")
@@ -659,7 +664,7 @@ async def feed_post_now(interaction: discord.Interaction) -> None:
         await interaction.followup.send("Configured channel is not messageable.")
         return
 
-    await channel.send(embed=result.embed, files=result.files)
+    await channel.send(embed=result.embed, files=result.make_files())
     await interaction.followup.send(f"Posted in <#{channel_id}>.")
 
 
