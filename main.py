@@ -75,10 +75,7 @@ RENDER_CONCURRENCY = int(os.environ.get("RENDER_CONCURRENCY", "2"))
 
 def parse_hhmm_utc(s: str) -> dt.time:
     hh, mm = s.split(":")
-    return dt.time(
-        hour=int(hh),
-        minute=int(mm)
-    )
+    return dt.time(hour=int(hh), minute=int(mm))
 
 
 DAILY_TIME_UTC = parse_hhmm_utc(DAILY_UTC_TIME)
@@ -210,9 +207,9 @@ class PdfIndex:
         for p in paths:
             rel = p.relative_to(self.root).as_posix()
             stem_cf = p.stem.casefold()
-            e = PdfEntry(path=p, rel=rel, stem_cf=stem_cf)
-            entries.append(e)
-            by_stem[stem_cf].append(e)
+            entry = PdfEntry(path=p, rel=rel, stem_cf=stem_cf)
+            entries.append(entry)
+            by_stem[stem_cf].append(entry)
 
         return entries, by_stem
 
@@ -235,12 +232,10 @@ class PdfIndex:
             return []
 
         async with self._lock:
-            # Exact stem match first
             exact = list(self.by_stem.get(q, []))
             if exact:
                 return exact
 
-            # Otherwise substring on stem
             hits: list[PdfEntry] = []
             for stem, entries in self.by_stem.items():
                 if q in stem:
@@ -274,24 +269,24 @@ class PdfIndex:
 
 @dataclass
 class RenderResult:
-  embed: discord.Embed
-  _raw_images: list[tuple[bytes, str]]
+    embed: discord.Embed
+    raw_images: list[tuple[bytes, str]]
 
-  def make_files(self) -> list[discord.File]:
-    return [
-      discord.File(fp=io.BytesIO(data), filename=fname)
-      for data, fname in self._raw_images
-    ]
+    def make_files(self) -> list[discord.File]:
+        return [
+            discord.File(fp=io.BytesIO(data), filename=filename)
+            for data, filename in self.raw_images
+        ]
 
 
 def _human_bytes(n: int) -> str:
     units = ["B", "KB", "MB", "GB"]
     v = float(n)
-    for u in units:
-        if v < 1024 or u == units[-1]:
-            if u == "B":
-                return f"{int(v)} {u}"
-            return f"{v:.1f} {u}"
+    for unit in units:
+        if v < 1024 or unit == units[-1]:
+            if unit == "B":
+                return f"{int(v)} {unit}"
+            return f"{v:.1f} {unit}"
         v /= 1024
     return f"{n} B"
 
@@ -320,7 +315,10 @@ def _render_pdf_first_pages_to_jpegs(
         w, h = img.size
         scale = min(1.0, max_edge_px / max(w, h))
         if scale < 1.0:
-            img = img.resize((int(w * scale), int(h * scale)), Image.LANCZOS)
+            img = img.resize(
+                (int(w * scale), int(h * scale)),
+                Image.LANCZOS,
+            )
 
         buf = io.BytesIO()
         img.save(
@@ -347,9 +345,8 @@ def _build_embed(
 
     desc = [
         f"**PDF:** {entry.rel if entry else 'n/a'}",
-        #f"**Title:** {title}",
-        #f"**Author:** {author}",
-        f"**Pages:** {page_count} (showing first {min(page_count, max_pages)})",
+        f"**Pages:** {page_count} (showing first "
+        f"{min(page_count, max_pages)})",
     ]
 
     embed = discord.Embed(
@@ -357,6 +354,12 @@ def _build_embed(
         description="\n".join(desc),
         color=discord.Color.blurple(),
     )
+
+    if title:
+        embed.add_field(name="Title", value=title[:1024], inline=False)
+
+    if author and author != "Unknown":
+        embed.add_field(name="Author", value=author[:1024], inline=False)
 
     if entry:
         try:
@@ -406,7 +409,34 @@ async def render_entry(
         filename = f"{Path(entry.rel).stem}_p{idx:02d}.jpg"
         raw_images.append((img_bytes, filename))
 
-    return RenderResult(embed=embed, _raw_images=raw_images)
+    return RenderResult(embed=embed, raw_images=raw_images)
+
+
+# -----------------------------
+# Permissions helpers
+# -----------------------------
+
+
+def get_missing_channel_perms(
+    channel: discord.TextChannel,
+    me: Optional[discord.Member],
+) -> list[str]:
+    if me is None:
+        return []
+
+    perms = channel.permissions_for(me)
+    missing: list[str] = []
+
+    if not perms.view_channel:
+        missing.append("View Channel")
+    if not perms.send_messages:
+        missing.append("Send Messages")
+    if not perms.attach_files:
+        missing.append("Attach Files")
+    if not perms.embed_links:
+        missing.append("Embed Links")
+
+    return missing
 
 
 # -----------------------------
@@ -435,8 +465,8 @@ class PdfPickView(discord.ui.View):
         self.on_pick = on_pick
 
         options: list[discord.SelectOption] = []
-        for i, e in enumerate(self.entries):
-            label = _truncate(e.rel, 100)
+        for i, entry in enumerate(self.entries):
+            label = _truncate(entry.rel, 100)
             options.append(discord.SelectOption(label=label, value=str(i)))
 
         self.select = discord.ui.Select(
@@ -485,11 +515,9 @@ class PdfNewsBot(commands.Bot):
 
     @tasks.loop(seconds=30)
     async def daily_loop(self) -> None:
-        # now_utc is aware, but .time() returns a naive object representing UTC
         now_utc = dt.datetime.now(tz=dt.timezone.utc)
         current_time_naive = now_utc.time()
 
-        # Compare naive current UTC time to naive target UTC time
         if current_time_naive < DAILY_TIME_UTC:
             return
 
@@ -500,15 +528,20 @@ class PdfNewsBot(commands.Bot):
         today = now_utc.date().isoformat()
 
         shared_result: Optional[RenderResult] = None
-        shared_entry: Optional[PdfEntry] = None
 
         if DAILY_MODE == "global":
-            shared_entry = await self.pdf_index.random_entry()
-            shared_result = await render_entry(
-                entry=shared_entry,
-                title_prefix=f"Daily: {shared_entry.rel.removesuffix('.pdf')}",
-                semaphore=self.render_sem,
-            )
+            try:
+                shared_entry = await self.pdf_index.random_entry()
+                shared_result = await render_entry(
+                    entry=shared_entry,
+                    title_prefix=(
+                        f"Daily: {shared_entry.rel.removesuffix('.pdf')}"
+                    ),
+                    semaphore=self.render_sem,
+                )
+            except Exception as e:
+                print(f"Failed to prepare global daily PDF: {e}")
+                return
 
         for guild_id, channel_id in due:
             try:
@@ -516,7 +549,24 @@ class PdfNewsBot(commands.Bot):
                 if channel is None:
                     channel = await self.fetch_channel(channel_id)
 
-                if not isinstance(channel, discord.abc.Messageable):
+                if not isinstance(channel, discord.TextChannel):
+                    print(
+                        f"Disabling {guild_id}/{channel_id}: "
+                        f"channel is not a text channel"
+                    )
+                    await disable_subscription(guild_id)
+                    continue
+
+                missing = get_missing_channel_perms(
+                    channel,
+                    channel.guild.me,
+                )
+                if missing:
+                    print(
+                        f"Skipping {guild_id}/{channel_id} today: "
+                        f"missing permissions: {', '.join(missing)}"
+                    )
+                    await mark_sent_today(guild_id, today)
                     continue
 
                 if DAILY_MODE == "per_guild":
@@ -531,8 +581,39 @@ class PdfNewsBot(commands.Bot):
                         continue
                     result = shared_result
 
-                await channel.send(f"You've got mail!", embed=result.embed, files=result.make_files())
+                await channel.send(
+                    "You've got mail!",
+                    embed=result.embed,
+                    files=result.make_files(),
+                )
                 await mark_sent_today(guild_id, today)
+
+            except discord.NotFound:
+                print(f"Disabling {guild_id}/{channel_id}: channel not found")
+                await disable_subscription(guild_id)
+
+            except discord.Forbidden as e:
+                code = getattr(e, "code", None)
+
+                if code == 50001:
+                    print(f"Disabling {guild_id}/{channel_id}: missing access")
+                    await disable_subscription(guild_id)
+                elif code == 50013:
+                    print(
+                        f"Skipping {guild_id}/{channel_id} today: "
+                        f"missing permissions"
+                    )
+                    await mark_sent_today(guild_id, today)
+                else:
+                    print(
+                        f"Skipping {guild_id}/{channel_id} today: "
+                        f"forbidden: {e}"
+                    )
+                    await mark_sent_today(guild_id, today)
+
+            except discord.HTTPException as e:
+                print(f"Daily send failed to {guild_id}/{channel_id}: {e}")
+
             except Exception as e:
                 print(f"Daily send failed to {guild_id}/{channel_id}: {e}")
 
@@ -572,6 +653,15 @@ async def feed_subscribe(
         )
         return
 
+    missing = get_missing_channel_perms(channel, interaction.guild.me)
+    if missing:
+        await interaction.response.send_message(
+            "I can't post there right now. Missing permissions: "
+            + ", ".join(missing),
+            ephemeral=True,
+        )
+        return
+
     await set_subscription(interaction.guild.id, channel.id)
     await interaction.response.send_message(
         f"Subscribed: daily PDFs will be posted in {channel.mention} "
@@ -580,7 +670,10 @@ async def feed_subscribe(
     )
 
 
-@feed_group.command(name="unsubscribe", description="Disable the feed for this server.")
+@feed_group.command(
+    name="unsubscribe",
+    description="Disable the feed for this server.",
+)
 @app_commands.checks.has_permissions(manage_guild=True)
 async def feed_unsubscribe(interaction: discord.Interaction) -> None:
     if interaction.guild is None:
@@ -615,15 +708,23 @@ async def feed_status(interaction: discord.Interaction) -> None:
         return
 
     channel_id, enabled, last_sent = sub
-    ch = interaction.guild.get_channel(channel_id)
-    ch_display = ch.mention if isinstance(ch, discord.TextChannel) else str(channel_id)
+    channel = interaction.guild.get_channel(channel_id)
+
+    if isinstance(channel, discord.TextChannel):
+        channel_display = channel.mention
+        missing = get_missing_channel_perms(channel, interaction.guild.me)
+        perms_text = "ok" if not missing else ", ".join(missing)
+    else:
+        channel_display = str(channel_id)
+        perms_text = "channel missing or not cached"
 
     await interaction.response.send_message(
-        f"Channel: {ch_display}\n"
+        f"Channel: {channel_display}\n"
         f"Enabled: {'yes' if enabled else 'no'}\n"
         f"Last sent (UTC date): {last_sent or 'never'}\n"
         f"Daily time: {DAILY_UTC_TIME} UTC\n"
-        f"Mode: {DAILY_MODE}",
+        f"Mode: {DAILY_MODE}\n"
+        f"Bot channel permissions: {perms_text}",
         ephemeral=True,
     )
 
@@ -649,23 +750,49 @@ async def feed_post_now(interaction: discord.Interaction) -> None:
     channel_id = sub[0]
     await interaction.response.defer(thinking=True, ephemeral=True)
 
-    entry = await interaction.client.pdf_index.random_entry()
-    result = await render_entry(
-        entry=entry,
-        title_prefix=f"{entry.rel.removesuffix('.pdf')}",
-        semaphore=interaction.client.render_sem,
-    )
-
-    channel = interaction.guild.get_channel(channel_id)
-    if channel is None:
-        channel = await interaction.client.fetch_channel(channel_id)
-
-    if not isinstance(channel, discord.abc.Messageable):
-        await interaction.followup.send("Configured channel is not messageable.")
+    try:
+        channel = interaction.guild.get_channel(channel_id)
+        if channel is None:
+            channel = await interaction.client.fetch_channel(channel_id)
+    except discord.NotFound:
+        await disable_subscription(interaction.guild.id)
+        await interaction.followup.send(
+            "Configured channel no longer exists. Subscription disabled."
+        )
+        return
+    except discord.Forbidden:
+        await disable_subscription(interaction.guild.id)
+        await interaction.followup.send(
+            "I no longer have access to the configured channel. "
+            "Subscription disabled."
+        )
         return
 
-    await channel.send(embed=result.embed, files=result.make_files())
-    await interaction.followup.send(f"Posted in <#{channel_id}>.")
+    if not isinstance(channel, discord.TextChannel):
+        await interaction.followup.send(
+            "Configured channel is not a text channel."
+        )
+        return
+
+    missing = get_missing_channel_perms(channel, channel.guild.me)
+    if missing:
+        await interaction.followup.send(
+            "I can't post there right now. Missing permissions: "
+            + ", ".join(missing)
+        )
+        return
+
+    try:
+        entry = await interaction.client.pdf_index.random_entry()
+        result = await render_entry(
+            entry=entry,
+            title_prefix=entry.rel.removesuffix(".pdf"),
+            semaphore=interaction.client.render_sem,
+        )
+        await channel.send(embed=result.embed, files=result.make_files())
+        await interaction.followup.send(f"Posted in <#{channel_id}>.")
+    except Exception as e:
+        await interaction.followup.send(f"Post failed: {e}")
 
 
 bot.tree.add_command(feed_group)
@@ -686,7 +813,10 @@ async def pdf_random(interaction: discord.Interaction) -> None:
         title_prefix=f"Random: {entry.rel.removesuffix('.pdf')}",
         semaphore=interaction.client.render_sem,
     )
-    await interaction.followup.send(embed=result.embed, files=result.make_files())
+    await interaction.followup.send(
+        embed=result.embed,
+        files=result.make_files(),
+    )
 
 
 async def pdf_name_autocomplete(
@@ -694,6 +824,7 @@ async def pdf_name_autocomplete(
     current: str,
 ) -> list[app_commands.Choice[str]]:
     return await interaction.client.pdf_index.autocomplete_stems(current)
+
 
 @pdf_group.command(
     name="by_name",
@@ -719,10 +850,12 @@ async def pdf_by_name(interaction: discord.Interaction, name: str) -> None:
             title_prefix=f"PDF: {entry.rel}",
             semaphore=interaction.client.render_sem,
         )
-        await interaction.followup.send(embed=result.embed, files=result.make_files())
+        await interaction.followup.send(
+            embed=result.embed,
+            files=result.make_files(),
+        )
         return
 
-    # Ambiguous: show picker then render on selection.
     async def on_pick(
         pick_interaction: discord.Interaction,
         entry: PdfEntry,
@@ -733,7 +866,10 @@ async def pdf_by_name(interaction: discord.Interaction, name: str) -> None:
             title_prefix=f"PDF: {entry.rel}",
             semaphore=pick_interaction.client.render_sem,
         )
-        await pick_interaction.followup.send(embed=result.embed, files=result.make_files())
+        await pick_interaction.followup.send(
+            embed=result.embed,
+            files=result.make_files(),
+        )
 
     view = PdfPickView(
         author_id=interaction.user.id,
@@ -761,12 +897,11 @@ async def pdf_reindex(interaction: discord.Interaction) -> None:
     except Exception as e:
         await interaction.followup.send(f"Reindex failed: {e}")
 
-@bot.tree.command(
-    name="agree",
-    description="agree",
-)
-async def pdf_agree(interaction: discord.Interaction):
-    await interaction.response.send_message(f"I legally agree")
+
+@bot.tree.command(name="agree", description="agree")
+async def pdf_agree(interaction: discord.Interaction) -> None:
+    await interaction.response.send_message("I legally agree")
+
 
 bot.tree.add_command(pdf_group)
 
